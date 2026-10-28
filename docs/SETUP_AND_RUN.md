@@ -64,8 +64,11 @@ npm run typecheck
 ```json
 {
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/clean-next.mjs && next dev",
+    "dev:keep": "next dev",
     "build": "next build",
+    "build:static": "node scripts/build-static.mjs",
+    "preview:static": "node scripts/serve-static.mjs",
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "lint": "next lint",
@@ -74,6 +77,11 @@ npm run typecheck
   }
 }
 ```
+
+> 📌 `npm run dev` removes a stale `.next/` folder first. That sidesteps the
+> `EINVAL: invalid argument, readlink … .next` crash seen when OneDrive/Dropbox
+> folder sync (or an interrupted `next build`) leaves files Next cannot
+> clean up itself.
 
 ---
 
@@ -150,8 +158,13 @@ and open **http://localhost:3000** (or wherever `next start` reports it).
   authentication — this is by design for a demo, and the README marks it
   "educational only". Do not expose the app to the public internet.
 - `npm run build` is the only command required for a server-rendered
-  deployment (no static export). `output: 'export'` is not supported with the
-  App Router / Web Crypto usage.
+  deployment. `output: 'export'` is **not** supported for this build flavour:
+  the `/api/*` route handlers need Node.
+- **GitHub Pages / static hosting is supported through a separate build:**
+  `npm run build:static` parks `app/api`, sets `output: "export"` and swaps
+  the API client for a localStorage relay (`lib/api/staticRelay.ts`),
+  producing a plain `out/` folder. Preview it with `npm run preview:static`.
+  Step-by-step: [DEPLOYMENT.md](./DEPLOYMENT.md).
 
 ---
 

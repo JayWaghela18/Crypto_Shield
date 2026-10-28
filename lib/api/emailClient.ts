@@ -19,12 +19,33 @@ import type {
   SenderPublicKeys,
   TransportPacket,
 } from "@/lib/types";
+import { STATIC_RELAY, relayFetch } from "@/lib/api/staticRelay";
 
 const API_BASE = "/api/email";
 const KEYS_BASE = "/api/keys";
 
+/**
+ * All network traffic goes through this one function.
+ *
+ * On a server deployment it is plain `fetch`. On the static (GitHub Pages)
+ * build there is no server, so it resolves against the localStorage relay in
+ * `lib/api/staticRelay.ts` — same routes, same status codes, local storage.
+ */
+export async function apiFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  if (STATIC_RELAY) return relayFetch(input, init);
+  return fetch(input, init);
+}
+
 /** Recorder callback — wired to TransportContext.recordPacket. */
 export type PacketRecorder = (packet: TransportPacket) => void;
+
+/** Marker header so the inspector never pretends local bytes hit a server. */
+const RELAY_HEADER: Record<string, string> = STATIC_RELAY
+  ? { "x-relay": "localStorage" }
+  : {};
 
 /** UTF-8 byte length of a string (what actually goes on the wire). */
 function byteLength(text: string): number {
@@ -58,6 +79,7 @@ function buildOutboundPacket(
       headers: {
         "content-type": "application/json",
         accept: "application/json",
+        ...RELAY_HEADER,
       },
       body,
       mode,
@@ -83,6 +105,7 @@ function recordInbound(
       headers: {
         "content-type": response.headers.get("content-type") ?? "(none)",
         "cache-control": response.headers.get("cache-control") ?? "(none)",
+        ...RELAY_HEADER,
       },
       body,
       mode,
@@ -112,7 +135,7 @@ export async function sendEmailRequest(
   const body = JSON.stringify(message);
   buildOutboundPacket("POST", API_BASE, body, mode, record);
 
-  const response = await fetch(API_BASE, {
+  const response = await apiFetch(API_BASE, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
@@ -136,7 +159,7 @@ export async function fetchDirectoryKey(
   const url = `${KEYS_BASE}?address=${encodeURIComponent(address)}`;
   buildOutboundPacket("GET", url, "", mode, record);
 
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  const response = await apiFetch(url, { headers: { Accept: "application/json" } });
   const text = await response.text();
   recordInbound("GET", url, response, text, mode, record);
 
@@ -146,20 +169,30 @@ export async function fetchDirectoryKey(
   return JSON.parse(text) as DirectoryEntry;
 }
 
-/** KEY REGISTRATION — publish this browser's public keys to the directory. */
+/**
+ * KEY REGISTRATION — publish this browser's public keys (+ account metadata)
+ * to the directory. Public material only; private keys never leave the page.
+ */
 export async function registerPublicKey(
   address: string,
   encryptionPub: JsonWebKey,
   signingPub: JsonWebKey,
   mode: SecurityMode,
   record?: PacketRecorder,
-): Promise<{ fingerprint: string; seeded: boolean }> {
+  meta?: { name?: string; role?: string },
+): Promise<{ fingerprint: string; entry: DirectoryEntry }> {
   // POST /api/keys (same route file as GET lookup — method dispatch).
   const url = KEYS_BASE;
-  const body = JSON.stringify({ address, encryptionPub, signingPub });
+  const body = JSON.stringify({
+    address,
+    encryptionPub,
+    signingPub,
+    name: meta?.name,
+    role: meta?.role,
+  });
   buildOutboundPacket("POST", url, body, mode, record);
 
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
@@ -170,7 +203,26 @@ export async function registerPublicKey(
   if (!response.ok) {
     throw new Error(`Key registration failed: ${response.status} ${text}`);
   }
-  return JSON.parse(text) as { fingerprint: string; seeded: boolean };
+  return JSON.parse(text) as { fingerprint: string; entry: DirectoryEntry };
+}
+
+/** DIRECTORY LISTING — every address mail can be addressed to. */
+export async function fetchDirectoryList(
+  mode: SecurityMode,
+  record?: PacketRecorder,
+): Promise<DirectoryEntry[]> {
+  const url = `${KEYS_BASE}?list=1`;
+  buildOutboundPacket("GET", url, "", mode, record);
+
+  const response = await apiFetch(url, { headers: { Accept: "application/json" } });
+  const text = await response.text();
+  recordInbound("GET", url, response, text, mode, record);
+
+  if (!response.ok) {
+    throw new Error(`Directory listing failed: ${response.status} ${text}`);
+  }
+  const parsed = JSON.parse(text) as { entries?: DirectoryEntry[] };
+  return parsed.entries ?? [];
 }
 
 /** RECEIVE — GET a mailbox folder (inbox or sent). */
@@ -183,7 +235,7 @@ export async function fetchMailboxRequest(
   const url = `${API_BASE}?mailbox=${folder}&user=${encodeURIComponent(user)}`;
   buildOutboundPacket("GET", url, "", mode, record);
 
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  const response = await apiFetch(url, { headers: { Accept: "application/json" } });
 
   const text = await response.text();
   recordInbound("GET", url, response, text, mode, record);
@@ -214,7 +266,7 @@ export async function setCertificateRevocation(
   });
   buildOutboundPacket("POST", url, body, mode, record);
 
-  const response = await fetch(url, {
+  const response = await apiFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
@@ -228,6 +280,27 @@ export async function setCertificateRevocation(
   return JSON.parse(text) as DirectoryEntry;
 }
 
+/**
+ * Best-effort directory lookup for a typed address — returns null instead of
+ * throwing when the address is unknown (or the relay is unavailable).
+ * Used by the sign-in form to tell "already registered" from "new address".
+ */
+export async function tryFetchDirectoryEntry(
+  address: string,
+): Promise<DirectoryEntry | null> {
+  try {
+    const url = `${KEYS_BASE}?address=${encodeURIComponent(address)}`;
+    const response = await apiFetch(url, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!response.ok) return null;
+    return (await response.json()) as DirectoryEntry;
+  } catch {
+    return null;
+  }
+}
+
 /** Fetch the simulated Certificate Revocation List. */
 export async function fetchCrl(
   mode: SecurityMode,
@@ -236,7 +309,7 @@ export async function fetchCrl(
   const url = `${KEYS_BASE}?crl=1`;
   buildOutboundPacket("GET", url, "", mode, record);
 
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  const response = await apiFetch(url, { headers: { Accept: "application/json" } });
   const text = await response.text();
   recordInbound("GET", url, response, text, mode, record);
 

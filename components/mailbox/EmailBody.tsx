@@ -11,12 +11,11 @@
  *
  * SECURE MODE:
  *   The same body is passed through DOMPurify before rendering, stripping
- *   scripts/event handlers — the baseline HTML hygiene that accompanies the
- *   cryptographic transport (which arrives in Phase 2).
+ *   scripts/event handlers.
  */
 
 import { useEffect, useState } from "react";
-import { AlertTriangle, ShieldCheck } from "lucide-react";
+import { ShieldAlert, ShieldCheck, Sparkles } from "lucide-react";
 import type { SecurityMode } from "@/lib/types";
 
 interface EmailBodyProps {
@@ -30,7 +29,6 @@ function SanitizedHtml({ html }: { html: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    // Dynamic import keeps DOMPurify (needs `window`) out of the server bundle.
     import("dompurify")
       .then(({ default: DOMPurify }) => {
         if (!cancelled) setSanitized(DOMPurify.sanitize(html));
@@ -41,42 +39,50 @@ function SanitizedHtml({ html }: { html: string }) {
     };
   }, [html]);
 
-  return <div dangerouslySetInnerHTML={{ __html: sanitized }} />;
+  return <div className="mail-content" dangerouslySetInnerHTML={{ __html: sanitized }} />;
 }
 
 export default function EmailBody({ html, mode }: EmailBodyProps) {
   const isSecure = mode === "secure";
 
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900/60">
-      {/* Renderer status banner */}
+    <div
+      className={[
+        "overflow-hidden rounded-xl border bg-slate-950/50",
+        isSecure ? "border-emerald-500/20" : "border-rose-500/30",
+      ].join(" ")}
+    >
       <div
         className={[
-          "flex items-center gap-2 border-b px-4 py-2 text-xs font-semibold",
+          "flex flex-wrap items-center gap-2 border-b px-3 py-2 text-[10px] font-bold uppercase tracking-wider",
           isSecure
-            ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
-            : "border-red-500/20 bg-red-500/10 text-red-400",
+            ? "border-emerald-500/20 bg-emerald-500/[0.07] text-emerald-300"
+            : "border-rose-500/20 bg-rose-500/[0.07] text-rose-300",
         ].join(" ")}
       >
         {isSecure ? (
           <>
             <ShieldCheck className="h-3.5 w-3.5" />
-            SECURE RENDER — sanitized with DOMPurify
+            secure render · DOMPurify
+            <span className="ml-auto flex items-center gap-1 text-emerald-400/60">
+              <Sparkles className="h-2.5 w-2.5" /> scripts stripped
+            </span>
           </>
         ) : (
           <>
-            <AlertTriangle className="h-3.5 w-3.5" />
-            UNSAFE RENDER — raw HTML, NO sanitization (Stored XSS vector)
+            <ShieldAlert className="h-3.5 w-3.5" />
+            unsafe render · raw HTML
+            <span className="ml-auto text-rose-400/70">Stored XSS vector</span>
           </>
         )}
       </div>
 
-      <div className="p-4 text-sm leading-relaxed text-slate-200">
+      <div className="p-4">
         {isSecure ? (
           <SanitizedHtml html={html} />
         ) : (
           // ⚠ INTENTIONALLY UNSAFE — do not copy into production code.
-          <div dangerouslySetInnerHTML={{ __html: html }} />
+          <div className="mail-content" dangerouslySetInnerHTML={{ __html: html }} />
         )}
       </div>
     </div>

@@ -1,13 +1,12 @@
 "use client";
 
 /**
- * The prominent Security Mode Switch in the navbar:
+ * The cyber mode switch in the command bar:
  *
- *   [ Unsafe Mode ]  <->  [ Secure Mode (CryptoShield) ]
+ *   [ ⚠ UNSAFE ]  <->  [ 🔒 SECURE · E2EE ]
  *
  * Unsafe = plaintext transport, spoofable sender, unsanitized rendering.
- * Secure = Web Crypto end-to-end protection (engine lands in Phase 2; the
- *          flag is already wired through every layer).
+ * Secure = Web Crypto end-to-end protection on every send and receive.
  */
 
 import { ShieldAlert, ShieldCheck } from "lucide-react";
@@ -21,40 +20,44 @@ export default function SecurityModeToggle() {
     <div
       role="tablist"
       aria-label="Security mode"
-      className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 p-1"
+      className="relative flex items-center gap-0.5 rounded-full border border-slate-700/70 bg-slate-950/80 p-0.5 shadow-innerline"
     >
-      {/* UNSAFE MODE */}
+      <span
+        aria-hidden
+        className={[
+          "absolute inset-y-0.5 w-[calc(50%-2px)] rounded-full transition-all duration-300 ease-out",
+          isSecure
+            ? "left-[calc(50%+1px)] bg-emerald-500/95 shadow-glow-green"
+            : "left-0.5 bg-rose-600/95 shadow-glow-red",
+        ].join(" ")}
+      />
+
       <button
         role="tab"
         aria-selected={!isSecure}
         onClick={() => setMode("unsafe")}
         className={[
-          "flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors",
-          !isSecure
-            ? "bg-red-600 text-white shadow-lg shadow-red-600/30"
-            : "text-slate-400 hover:bg-slate-800 hover:text-slate-200",
+          "relative z-10 flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider transition-colors sm:px-3",
+          !isSecure ? "text-white" : "text-slate-500 hover:text-slate-300",
         ].join(" ")}
         title="Plaintext transport, spoofable sender, unsanitized rendering"
       >
-        <ShieldAlert className="h-4 w-4" />
-        Unsafe Mode
+        <ShieldAlert className="h-3.5 w-3.5" />
+        <span className="hidden sm:inline">Unsafe</span>
       </button>
 
-      {/* SECURE MODE */}
       <button
         role="tab"
         aria-selected={isSecure}
         onClick={() => setMode("secure")}
         className={[
-          "flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors",
-          isSecure
-            ? "bg-emerald-600 text-white shadow-lg shadow-emerald-600/30"
-            : "text-slate-400 hover:bg-slate-800 hover:text-slate-200",
+          "relative z-10 flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider transition-colors sm:px-3",
+          isSecure ? "text-white" : "text-slate-500 hover:text-slate-300",
         ].join(" ")}
         title="End-to-end encrypted and signed (Web Crypto)"
       >
-        <ShieldCheck className="h-4 w-4" />
-        Secure Mode (CryptoShield)
+        <ShieldCheck className="h-3.5 w-3.5" />
+        <span className="hidden sm:inline">Secure</span>
       </button>
     </div>
   );

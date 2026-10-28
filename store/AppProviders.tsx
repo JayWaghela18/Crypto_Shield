@@ -1,14 +1,14 @@
 "use client";
 
 /**
- * Composes all context providers in dependency order:
+ * Composes every context provider in dependency order:
  *
  *   SecurityMode  → global unsafe/secure flag
- *     Transport    → live wire-packet log (reads nothing above)
+ *     Transport    → live wire-packet + crypto-step log
  *       Audit      → detected-incident log (inspector report export)
  *         KeyVault  → optional imported third-party key material
- *           UserProfile → Web Crypto keypairs (browser-only)
- *             MailStore → mailbox actions (reads mode + transport)
+ *           Auth      → local accounts, RSA keys, session
+ *             MailStore → mailbox actions (reads the active account)
  */
 
 import type { ReactNode } from "react";
@@ -16,7 +16,7 @@ import { SecurityModeProvider } from "@/store/SecurityModeContext";
 import { TransportProvider } from "@/store/TransportContext";
 import { AuditProvider } from "@/store/AuditContext";
 import { KeyVaultProvider } from "@/store/KeyVaultContext";
-import { UserProfileProvider } from "@/store/UserProfileContext";
+import { AuthProvider } from "@/store/AuthContext";
 import { MailStoreProvider } from "@/store/MailStoreContext";
 
 export default function AppProviders({ children }: { children: ReactNode }) {
@@ -25,9 +25,9 @@ export default function AppProviders({ children }: { children: ReactNode }) {
       <TransportProvider>
         <AuditProvider>
           <KeyVaultProvider>
-            <UserProfileProvider>
+            <AuthProvider>
               <MailStoreProvider>{children}</MailStoreProvider>
-            </UserProfileProvider>
+            </AuthProvider>
           </KeyVaultProvider>
         </AuditProvider>
       </TransportProvider>

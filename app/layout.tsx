@@ -4,19 +4,25 @@ import AppProviders from "@/store/AppProviders";
 import Navbar from "@/components/Navbar";
 
 export const metadata: Metadata = {
-  title: "CryptoShield — Email Transport Security Lab",
+  title: "CryptoShield — Secure Mail Operations",
   description:
-    "Interactive demonstration of email transport vulnerabilities (spoofing, plaintext, Stored XSS) vs. end-to-end cryptographic protection (Phase 1).",
+    "Cyber command center for end-to-end encrypted email: RSA-2048 identities, AES-256-GCM transport, live packet inspection and attack simulations.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="antialiased">
+      <body className="min-h-screen">
         <AppProviders>
-          {/* Global nav with the Security Mode Switch */}
-          <Navbar />
-          <main className="h-[calc(100vh-4rem)]">{children}</main>
+          {/* Decorative cyber grid behind the whole command center */}
+          <div
+            aria-hidden
+            className="pointer-events-none fixed inset-0 -z-10 bg-cyber-grid bg-grid opacity-[0.35]"
+          />
+          <div className="flex min-h-screen flex-col">
+            <Navbar />
+            {children}
+          </div>
         </AppProviders>
       </body>
     </html>

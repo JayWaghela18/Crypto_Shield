@@ -24,6 +24,9 @@ import { NextResponse } from "next/server";
 import type { EmailDraft, EmailPayload, SenderPublicKeys } from "@/lib/types";
 import { listEmails, storeEmail } from "@/lib/server/memoryStore";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 /** Fields the secure engine may attach to a send (opaque crypto material). */
 interface SecurePackageFields {
   isSecureMode?: boolean;
@@ -58,7 +61,7 @@ export async function POST(request: Request) {
     // ⚠ SPOOFABLE: taken verbatim — no verification that the sender owns
     // this address. Anti-spoofing ONLY exists in secure mode via signatures.
     sender: draft.sender?.trim() || "spoofed@unverified.example",
-    recipient: draft.recipient.trim(),
+    recipient: draft.recipient.trim().toLowerCase(),
     subject: draft.subject?.trim() || (isSecure ? "(end-to-end encrypted)" : "(no subject)"),
     // Secure mode: content lives inside the ciphertext only; the server copy
     // of the body stays empty (the server has no keys to read it — by design).

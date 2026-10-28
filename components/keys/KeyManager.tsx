@@ -26,7 +26,7 @@ import type {
   KeyExportFormat,
   RevokedCertificate,
 } from "@/lib/types";
-import { useUserProfile } from "@/store/UserProfileContext";
+import { useAuth } from "@/store/AuthContext";
 import { useKeyVault } from "@/store/KeyVaultContext";
 import { useSecurityMode } from "@/store/SecurityModeContext";
 import { useTransport } from "@/store/TransportContext";
@@ -49,7 +49,7 @@ export default function KeyManager({
   open: boolean;
   onClose: () => void;
 }) {
-  const { profile, status } = useUserProfile();
+  const { profile, status } = useAuth();
   const { imported, importMaterial, clearImported } = useKeyVault();
   const { mode } = useSecurityMode();
   const { recordPacket } = useTransport();

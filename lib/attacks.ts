@@ -29,10 +29,10 @@ export interface SendAttackOptions {
 /* Attack 1 — spoofed sender                                           */
 /* ------------------------------------------------------------------ */
 
-export function spoofedEmailDraft(): EmailDraft {
+export function spoofedEmailDraft(self: string = CURRENT_USER): EmailDraft {
   return {
     sender: SPOOF_TARGET, // claimed From — this client does NOT hold this key
-    recipient: CURRENT_USER,
+    recipient: self,
     subject: "URGENT: verify your bank account or it will be locked",
     body: "<p>Dear customer,</p><p>Confirm your credentials within 24 hours or your account will be suspended.</p><p>— <b>Support Team</b></p>",
   };
@@ -42,10 +42,10 @@ export function spoofedEmailDraft(): EmailDraft {
 /* Attack 2 — MITM tampering                                           */
 /* ------------------------------------------------------------------ */
 
-export function mitmEmailDraft(): EmailDraft {
+export function mitmEmailDraft(self: string = CURRENT_USER): EmailDraft {
   return {
-    sender: CURRENT_USER,
-    recipient: CURRENT_USER,
+    sender: self,
+    recipient: self,
     subject: "Confidential transfer authorization",
     body: "<p>Please transfer $100 to account ACCT-12345. Reference: QX-9931.</p>",
   };
@@ -83,13 +83,13 @@ export function tamperCiphertext(ciphertext: string): string {
  * is opened — the script runs with the reader's session (simulated hijack
  * alert). In Secure Mode DOMPurify strips the handler before render.
  */
-export function xssEmailDraft(): EmailDraft {
+export function xssEmailDraft(self: string = CURRENT_USER): EmailDraft {
   return {
     // Sent from this identity so Secure Mode signature verification passes
     // (green) and the ONLY thing between the script and execution is
     // DOMPurify — exactly the contrast Phase 3 wants to demonstrate.
-    sender: CURRENT_USER,
-    recipient: CURRENT_USER,
+    sender: self,
+    recipient: self,
     subject: "🎁 You have won a free security audit!",
     body: '<p>Click to claim your prize.</p><img src="x" onerror="alert(\'⚠ STORED XSS — session hijacked (simulated): your cryptoshield session cookie was stolen\'); document.title=\'XSS_SESSION_HIJACKED\'">',
   };

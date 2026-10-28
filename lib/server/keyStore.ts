@@ -1,46 +1,48 @@
 /**
- * Server-side public key directory (in-memory, HMR-safe like memoryStore).
+ * Server-side public key directory (the lab's simulated PKI / LDAP).
  *
- * - "browser" entries: public keys a live client registers for itself.
- * - "demo" entries: server-generated identities for Bob/CEO so messages can
- *   be encrypted TO them. Their private keys exist ONLY here (Node Web Crypto,
- *   non-extractable) — the server uses Bob's private key once to sign a
- *   genuine secure welcome message, which proves end-to-end verification
- *   works for a real remote sender, not just self-signed mail.
+ * - "browser" entries: public keys a live client registers for itself. These
+ *   are persisted to `.data/cryptoshield-store.json`, so reloading the dev
+ *   server keeps every registered account addressable.
+ * - "demo" entries: server-generated identities for the fixed demo addresses
+ *   (Bob, CEO, bank) so a fresh browser can always address mail without first
+ *   creating those accounts. Their private keys are non-extractable and never
+ *   leave this module.
  *
- * ⚠ Only PUBLIC material ever leaves this module (the API route serializes
- * a strict allowlist). Private keys never reach the network.
+ * ⚠ Only PUBLIC material ever leaves this module (the API route serializes a
+ * strict allowlist). Private keys never reach the network.
  */
 
-import type { DirectoryEntry, RevokedCertificate } from "@/lib/types";
-import { hybridEncrypt, jwkFingerprint, type SenderIdentity } from "@/lib/crypto";
-import { listEmails, storeEmail } from "@/lib/server/memoryStore";
-import { CURRENT_USER, DEMO_USERS } from "@/lib/constants";
+import type { DirectoryEntry, RevokedCertificate, UserKeyPair } from "@/lib/types";
+import { jwkFingerprint } from "@/lib/crypto";
+import {
+  readPersistedStore,
+  updatePersistedStore,
+  type PersistedKeyEntry,
+} from "@/lib/server/persistence";
+import { DEMO_USERS } from "@/lib/constants";
 
-interface RegisteredEntry {
-  address: string;
-  encryptionPub: JsonWebKey;
-  signingPub: JsonWebKey;
-  fingerprint: string;
-  source: "browser" | "demo";
-  /** CRL simulation: revoked certificate (rejected even if signature is valid). */
-  revoked?: boolean;
-  revokedAt?: number;
-  revokeReason?: string;
+interface RegisteredEntry extends PersistedKeyEntry {
   /** Server-only private pairs for demo identities (never serialized). */
   privatePairs?: { encryption: CryptoKeyPair; signing: CryptoKeyPair };
 }
 
 interface KeyRegistry {
   entries: Map<string, RegisteredEntry>;
-  seeded: boolean;
+  hydrated: boolean;
 }
 
 const globalStore = globalThis as unknown as { __cryptoshieldKeys?: KeyRegistry };
 
 function registry(): KeyRegistry {
   if (!globalStore.__cryptoshieldKeys) {
-    globalStore.__cryptoshieldKeys = { entries: new Map(), seeded: false };
+    const persisted = readPersistedStore();
+    globalStore.__cryptoshieldKeys = {
+      entries: new Map(
+        persisted.keys.map((entry) => [entry.address.toLowerCase(), { ...entry }]),
+      ),
+      hydrated: true,
+    };
   }
   return globalStore.__cryptoshieldKeys;
 }
@@ -60,6 +62,16 @@ export function sanitizePublicJwk(jwk: JsonWebKey): JsonWebKey {
   return clean;
 }
 
+/** Persist the browser-registered slice of the directory. */
+function persistEntries(): void {
+  const browserEntries: PersistedKeyEntry[] = [...registry().entries.values()]
+    .filter((entry) => entry.source === "browser")
+    .map(({ privatePairs: _privatePairs, ...entry }) => entry);
+  updatePersistedStore((store) => {
+    store.keys = browserEntries;
+  });
+}
+
 /** Public-only view of an entry (what /api/keys serializes). */
 function publicView(entry: RegisteredEntry): DirectoryEntry {
   return {
@@ -68,12 +80,15 @@ function publicView(entry: RegisteredEntry): DirectoryEntry {
     signingPub: entry.signingPub,
     fingerprint: entry.fingerprint,
     source: entry.source,
+    name: entry.name,
+    role: entry.role,
+    createdAt: entry.createdAt,
     revoked: entry.revoked ?? false,
     ...(entry.revoked ? { revokedAt: entry.revokedAt, revokeReason: entry.revokeReason } : {}),
   };
 }
 
-/** Generate a demo identity (Bob/CEO) with server-held non-extractable keys. */
+/** Generate a demo identity (Bob/CEO/bank) with non-extractable private keys. */
 async function ensureDemoIdentity(address: string): Promise<RegisteredEntry> {
   const reg = registry();
   const existing = reg.entries.get(address);
@@ -81,12 +96,22 @@ async function ensureDemoIdentity(address: string): Promise<RegisteredEntry> {
 
   const [encryption, signing] = await Promise.all([
     crypto.subtle.generateKey(
-      { name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+      {
+        name: "RSA-OAEP",
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: "SHA-256",
+      },
       /* extractable */ false, // private key can never be exported
       ["encrypt", "decrypt"],
     ),
     crypto.subtle.generateKey(
-      { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+      {
+        name: "RSA-PSS",
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: "SHA-256",
+      },
       false,
       ["sign", "verify"],
     ),
@@ -97,12 +122,17 @@ async function ensureDemoIdentity(address: string): Promise<RegisteredEntry> {
     crypto.subtle.exportKey("jwk", signing.publicKey),
   ]);
 
+  const demoProfile = DEMO_USERS.find((u) => u.email === address);
+
   const entry: RegisteredEntry = {
     address,
     encryptionPub,
     signingPub,
     fingerprint: await jwkFingerprint(signingPub),
     source: "demo",
+    name: demoProfile?.displayName,
+    role: demoProfile?.role,
+    createdAt: Date.now(),
     privatePairs: { encryption, signing },
   };
   reg.entries.set(address, entry);
@@ -120,15 +150,37 @@ export async function getEntry(address: string): Promise<DirectoryEntry | null> 
   return null;
 }
 
+/**
+ * Every address a message can be sent to: registered browser accounts plus the
+ * fixed demo identities. Used by the compose recipient picker.
+ */
+export async function listEntries(): Promise<DirectoryEntry[]> {
+  const reg = registry();
+  for (const demo of DEMO_USERS) {
+    if (!reg.entries.has(demo.email)) await ensureDemoIdentity(demo.email);
+  }
+  return [...reg.entries.values()]
+    .map(publicView)
+    .sort((a, b) => a.address.localeCompare(b.address));
+}
+
+/** The signed-in account's own registered keys, or null. */
+export async function getRegisteredAccount(address: string): Promise<DirectoryEntry | null> {
+  const entry = registry().entries.get(address.trim().toLowerCase());
+  return entry ? publicView(entry) : null;
+}
+
 /** Register (or rotate) the public keys for a live browser identity. */
 export async function registerBrowserKeys(
   address: string,
   encryptionPub: JsonWebKey,
   signingPub: JsonWebKey,
+  meta?: { name?: string; role?: string },
 ): Promise<DirectoryEntry> {
   const normalized = address.trim().toLowerCase();
   const encClean = sanitizePublicJwk(encryptionPub);
   const signClean = sanitizePublicJwk(signingPub);
+  const previous = registry().entries.get(normalized);
 
   const entry: RegisteredEntry = {
     address: normalized,
@@ -136,11 +188,28 @@ export async function registerBrowserKeys(
     signingPub: signClean,
     fingerprint: await jwkFingerprint(signClean),
     source: "browser",
-    // Note: any previous private pairs (demo identity) are intentionally dropped —
-    // a browser registration supersedes the demo key for this address.
+    name: meta?.name?.trim() || previous?.name,
+    role: meta?.role?.trim() || previous?.role,
+    createdAt: previous?.createdAt ?? Date.now(),
+    // A browser registration supersedes any demo key material for this address.
   };
   registry().entries.set(normalized, entry);
+  persistEntries();
   return publicView(entry);
+}
+
+/** Convenience for the registration endpoint: keys derived from a UserKeyPair. */
+export async function registerUserKeyPair(
+  address: string,
+  keyPair: UserKeyPair,
+  meta?: { name?: string; role?: string },
+): Promise<DirectoryEntry> {
+  return registerBrowserKeys(
+    address,
+    keyPair.encryption.publicKey,
+    keyPair.signing.publicKey,
+    meta,
+  );
 }
 
 /**
@@ -170,6 +239,7 @@ export async function setRevocation(
     ? reason?.trim() || "unspecified (demo CRL)"
     : undefined;
 
+  if (entry.source === "browser") persistEntries();
   return publicView(entry);
 }
 
@@ -183,63 +253,4 @@ export function listRevoked(): RevokedCertificate[] {
       revokedAt: e.revokedAt ?? 0,
       revokeReason: e.revokeReason ?? "unspecified (demo CRL)",
     }));
-}
-
-/**
- * Seed one genuine secure message: Bob (server-held key) → Alice.
- * Runs after Alice registers so it can be encrypted to her public key.
- * Created exactly once per server lifetime.
- */
-export async function maybeSeedSecureMessage(): Promise<boolean> {
-  const reg = registry();
-  if (reg.seeded) return false;
-
-  const alice = registry().entries.get(CURRENT_USER.toLowerCase());
-  if (!alice) return false; // retry on next registration
-
-  const alreadySeeded = listEmails("inbox", CURRENT_USER).some(
-    (e) => e.isSecureMode && e.sender === "bob@cryptoshield.dev",
-  );
-  if (alreadySeeded) {
-    reg.seeded = true;
-    return false;
-  }
-
-  const bob = await ensureDemoIdentity("bob@cryptoshield.dev");
-  if (!bob.privatePairs) return false;
-
-  const timestamp = Date.now();
-  const payload = {
-    sender: "bob@cryptoshield.dev",
-    recipient: CURRENT_USER,
-    subject: "Hybrid-encrypted welcome — signed by my private key",
-    body: "<p>Hi Alice,</p><p>This message was <b>encrypted to your RSA-OAEP public key</b> and <b>signed with my RSA-PSS private key</b>. The mail server can only forward the opaque envelope — it cannot read or forge this content.</p><p>— Bob</p>",
-    timestamp,
-  };
-
-  const senderIdentity: SenderIdentity = {
-    address: "bob@cryptoshield.dev",
-    publicKey: { encryption: bob.encryptionPub, signing: bob.signingPub },
-    signingPriv: bob.privatePairs.signing.privateKey,
-  };
-
-  const envelope = await hybridEncrypt(payload, alice.encryptionPub, senderIdentity);
-
-  storeEmail({
-    id: crypto.randomUUID(),
-    sender: "bob@cryptoshield.dev",
-    recipient: CURRENT_USER,
-    // Decoy subject on the wire — the real one lives inside the ciphertext.
-    subject: "(end-to-end encrypted)",
-    body: "",
-    ciphertext: envelope.payloadCiphertext,
-    symmetricKey: envelope.encryptedSymmetricKey,
-    signature: envelope.signature,
-    senderPubKey: envelope.senderPubKey,
-    isSecureMode: true,
-    timestamp,
-  });
-
-  reg.seeded = true;
-  return true;
 }

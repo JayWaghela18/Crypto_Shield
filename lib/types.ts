@@ -147,6 +147,12 @@ export interface DirectoryEntry {
   fingerprint: string;
   /** "browser" = registered by a live client, "demo" = server-held demo identity. */
   source: "browser" | "demo";
+  /** Display name registered with the account (directory listing). */
+  name?: string;
+  /** Role / title registered with the account. */
+  role?: string;
+  /** Epoch ms when the account first registered. */
+  createdAt?: number;
   /** CRL simulation: the certificate is revoked (S/MIME must reject it). */
   revoked?: boolean;
   /** Epoch ms when the certificate was revoked. */
@@ -230,6 +236,10 @@ export interface UserProfile {
   displayName: string;
   /** Primary email address. */
   email: string;
+  /** Optional job title / authorization level shown in the UI. */
+  role?: string;
+  /** Optional avatar glyph used by the command bar. */
+  avatar?: string;
   /** RSA public/private key pairs for encryption and signing. */
   keyPair: UserKeyPair;
   /** Certificates that bind the identity to the public keys. */
@@ -276,6 +286,88 @@ export interface EmailDraft {
   recipient: string;
   subject: string;
   body: string;
+}
+
+/**
+ * GET /api/identity — the local account's public keys.
+ */
+export interface OwnIdentityResponse {
+  user: {
+    id: string;
+    name: string;
+    email: string;
+  };
+  publicKeys: SenderPublicKeys;
+  /**
+   * Legacy field kept for wire compatibility. This build keeps private keys in
+   * the browser, so the server has no backup to return.
+   */
+  encryptedPrivateKey: string | null;
+}
+
+/** `GET /api/identity` before this browser has uploaded its public keys. */
+export interface IdentityNotProvisionedResponse {
+  needsProvisioning: true;
+}
+
+/* ------------------------------------------------------------------ */
+/* Account session schemas (multi-user local accounts)                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A locally stored account: profile + private keys + the public fingerprint
+ * registered in the server directory. Private keys never leave the browser.
+ */
+export interface LocalAccount extends UserProfile {
+  role: string;
+  avatar: string;
+  /** SHA-256 fingerprint of the signing public key (uppercase hex). */
+  fingerprint: string;
+}
+
+/** Request body accepted by `POST /api/keys` when registering an account. */
+export interface RegisterAccountPayload {
+  address: string;
+  name: string;
+  role: string;
+  encryptionPub: JsonWebKey;
+  signingPub: JsonWebKey;
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 2 — persisted mailbox API schemas                             */
+/* ------------------------------------------------------------------ */
+
+/** A persisted message as returned by `/api/emails/*`. */
+export interface MailboxMessage extends EmailPayload {
+  /** Display names resolved from the User rows. */
+  senderName: string;
+  recipientName: string;
+  /** True when the authenticated viewer is the sender. */
+  sentByMe: boolean;
+  /** Server-side integrity flag (Phase 3 populates it; send sets false). */
+  isTampered: boolean;
+}
+
+/** Exact-match recipient lookup used before encrypting a message. */
+export interface RecipientDirectoryEntry {
+  user: {
+    name: string;
+    email: string;
+  };
+  publicKeys: SenderPublicKeys;
+}
+
+/** Wire payload accepted by `POST /api/emails/send`. */
+export interface SendMailWirePayload {
+  sender?: string;
+  recipient: string;
+  subject: string;
+  /** Plaintext HTML (unsafe) or base64(IV‖ciphertext) (secure). */
+  body: string;
+  isSecureMode: boolean;
+  encryptedSymmetricKey?: string;
+  signature?: string;
 }
 
 /* ------------------------------------------------------------------ */

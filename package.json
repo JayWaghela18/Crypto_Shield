@@ -4,8 +4,11 @@
   "private": true,
   "description": "CryptoShield — interactive lab demonstrating email transport vulnerabilities vs. end-to-end cryptographic protection (Phase 1)",
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/clean-next.mjs && next dev",
+    "dev:keep": "next dev",
     "build": "next build",
+    "build:static": "node scripts/build-static.mjs",
+    "preview:static": "node scripts/serve-static.mjs",
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "lint": "next lint",

@@ -1,87 +1,79 @@
 /**
- * Server-side in-memory email database.
+ * Server-side demo mailbox.
  *
- * ⚠ EDUCATIONAL DEMO ONLY — no persistence, no auth, no access control.
- * Every API route reads/writes the same flat list, which is exactly the kind
- * of trust model Phase 1 is demonstrating. Do NOT deploy this publicly.
+ * EDUCATION ONLY — the unsafe half of this lab intentionally has no auth and
+ * no access control: any caller can read any mailbox by passing `?user=`.
+ * That is the vulnerability being demonstrated. Messages are persisted to
+ * `.data/cryptoshield-store.json` so a `npm run dev` restart keeps your mail.
  *
- * Stored on globalThis so Next.js dev-mode HMR doesn't wipe the data
- * on every file edit.
+ * Stored on globalThis so Next.js dev-mode HMR doesn't wipe the data on every
+ * file edit.
  */
 
 import type { EmailPayload } from "@/lib/types";
+import { readPersistedStore, updatePersistedStore } from "@/lib/server/persistence";
+import { demoSeedEmails } from "@/lib/server/demoSeed";
 
 interface DemoDatabase {
   emails: EmailPayload[];
+  hydrated: boolean;
 }
 
 const globalStore = globalThis as unknown as { __cryptoshieldDb?: DemoDatabase };
 
-/** Seed mailbox so the UI has content on first load. */
+/** Seed mailboxes so every demo profile has something to open. */
 function seed(): EmailPayload[] {
-  const now = Date.now();
-  return [
-    {
-      id: crypto.randomUUID(),
-      sender: "bob@cryptoshield.dev",
-      recipient: "alice@cryptoshield.dev",
-      subject: "Workshop schedule for Friday",
-      body: "<p>Hey Alice,</p><p>The blockchain workshop starts at <b>10:00 AM</b> in Lab 2. Bring your laptop.</p><p>— Bob</p>",
-      ciphertext: null,
-      symmetricKey: null,
-      signature: null,
-      isSecureMode: false,
-      timestamp: now - 1000 * 60 * 42,
-    },
-    {
-      id: crypto.randomUUID(),
-      sender: "ceo@cryptoshield.dev",
-      recipient: "alice@cryptoshield.dev",
-      subject: "Quarterly security review",
-      body: "<p>Hi team,</p><p>Please review the attached transport findings before Thursday.</p><p>Thanks,<br/>CEO</p>",
-      ciphertext: null,
-      symmetricKey: null,
-      signature: null,
-      isSecureMode: false,
-      timestamp: now - 1000 * 60 * 60 * 5,
-    },
-    {
-      id: crypto.randomUUID(),
-      sender: "alice@cryptoshield.dev",
-      recipient: "bob@cryptoshield.dev",
-      subject: "Re: Workshop schedule for Friday",
-      body: "<p>Works for me — see you at 10.</p>",
-      ciphertext: null,
-      symmetricKey: null,
-      signature: null,
-      isSecureMode: false,
-      timestamp: now - 1000 * 60 * 30,
-    },
-  ];
+  return demoSeedEmails();
 }
 
 /** Get (lazily initializing) the shared database. */
 function db(): DemoDatabase {
   if (!globalStore.__cryptoshieldDb) {
-    globalStore.__cryptoshieldDb = { emails: seed() };
+    const persisted = readPersistedStore();
+    globalStore.__cryptoshieldDb = {
+      emails: persisted.emails.length > 0 ? persisted.emails : seed(),
+      hydrated: true,
+    };
+    if (persisted.emails.length === 0) {
+      updatePersistedStore((store) => {
+        store.emails = globalStore.__cryptoshieldDb!.emails;
+      });
+    }
   }
   return globalStore.__cryptoshieldDb;
 }
 
-/**
- * Persist a newly received message.
- * ⚠ No sender validation, no authentication, no recipient authorization —
- * intentional (email spoofing demonstration).
- */
+/** Persist a newly received message. */
 export function storeEmail(email: EmailPayload): EmailPayload {
-  db().emails.push(email);
+  const database = db();
+  database.emails.push(email);
+  updatePersistedStore((store) => {
+    store.emails = database.emails.slice(-500);
+  });
   return email;
 }
 
 /** List messages for a mailbox folder (inbox = recipient match, sent = sender match). */
 export function listEmails(folder: "inbox" | "sent", address: string): EmailPayload[] {
   const field = folder === "inbox" ? "recipient" : "sender";
+  const needle = address.trim().toLowerCase();
   return db()
-    .emails.filter((e) => e[field].toLowerCase() === address.toLowerCase())
+    .emails.filter((e) => e[field].trim().toLowerCase() === needle)
     .sort((a, b) => b.timestamp - a.timestamp);
+}
+
+/** Remove every message addressed to or sent by an address (account reset). */
+export function purgeMailbox(address: string): number {
+  const needle = address.trim().toLowerCase();
+  const database = db();
+  const before = database.emails.length;
+  database.emails = database.emails.filter(
+    (e) =>
+      e.sender.trim().toLowerCase() !== needle &&
+      e.recipient.trim().toLowerCase() !== needle,
+  );
+  updatePersistedStore((store) => {
+    store.emails = database.emails;
+  });
+  return before - database.emails.length;
 }

@@ -24,3 +24,9 @@ yarn-error.log*
 .DS_Store
 .idea/
 .vscode/
+
+# local demo data store
+/.data/
+
+# parked during `npm run build:static` (never committed)
+/.static-build-parked-api/

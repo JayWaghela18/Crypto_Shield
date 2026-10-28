@@ -1,0 +1,124 @@
+// CryptoShield — Phase 1 data model
+//
+// PostgreSQL is the system of record. Cryptographic material is split so the
+// server never holds a usable private key:
+//   • publicKeyJwk        — stringified JSON: { encryption, signing } public JWKs
+//   • encryptedPrivateKey — optional, client-encrypted backup (PBKDF2 → AES-GCM)
+//
+// Apply with `npx prisma migrate dev` (or `npm run db:push` for a scratch DB).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Authorization level. Elevated privileges are granted out-of-band (seed /
+/// admin tooling) — never by the public registration endpoint.
+enum Role {
+  USER
+  ADMIN
+}
+
+/// Security incident categories surfaced in the audit report.
+enum AuditType {
+  SPOOFING
+  TAMPERING
+  SANITIZATION
+  REVOKED_CERT
+}
+
+/// Incident severity, ordered low → critical.
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+/// A registered mail account.
+model User {
+  id       String @id @default(cuid())
+  name     String
+  email    String @unique
+  /// bcrypt hash (cost 12). Never the plaintext password.
+  passwordHash String
+  role     Role   @default(USER)
+
+  /// Stringified JSON holding the two public JWKs:
+  /// `{ "encryption": {...RSA-OAEP-256}, "signing": {...RSA-PSS} }`
+  publicKeyJwk String @db.Text
+
+  /// Optional recovery backup. Ciphertext only:
+  /// `{ v, kdf, iterations, salt, iv, ciphertext }` produced in the browser
+  /// with a password-derived AES-256-GCM key. Null when the user declined a
+  /// backup — the server cannot re-derive it.
+  encryptedPrivateKey String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sentEmails     Email[]       @relation("SentEmails")
+  receivedEmails Email[]       @relation("ReceivedEmails")
+  auditEvents    AuditEvent[]
+}
+
+/// One stored message. In secure mode the readable content lives only inside
+/// `body` as ciphertext; the server stores no decryption key.
+model Email {
+  id String @id @default(cuid())
+
+  senderId    String
+  recipientId String
+
+  subject String
+  /// Plaintext HTML (unsafe mode) or base64 ciphertext (secure mode).
+  body    String @db.Text
+
+  /// base64 RSA-OAEP(AES-256 key, recipient public key) — secure mode only.
+  encryptedSymmetricKey String? @db.Text
+  /// base64 RSA-PSS-SHA256 signature over the canonical payload — secure mode.
+  signature             String? @db.Text
+
+  /// Was the message produced by the E2E encrypted transport?
+  isSecureMode Boolean @default(false)
+  /// Did verification detect tampering? Set by the receive pipeline.
+  isTampered   Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  sender    User @relation("SentEmails", fields: [senderId], references: [id], onDelete: Cascade)
+  recipient User @relation("ReceivedEmails", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([recipientId, createdAt])
+  @@index([senderId, createdAt])
+}
+
+/// Certificate Revocation List entry. Keyed by address because certificates
+/// are issued per identity, not per account row. Not a foreign key on purpose:
+/// a revocation must outlive the account it refers to.
+model RevokedCertificate {
+  id        String   @id @default(cuid())
+  userEmail String   @unique
+  reason    String
+  revokedAt DateTime @default(now())
+}
+
+/// Append-only security incident log (spoofing, tampering, sanitization,
+/// revoked certificate). Rows are written server-side only.
+model AuditEvent {
+  id        String    @id @default(cuid())
+  userId    String
+  type      AuditType
+  severity  Severity
+  details   String    @db.Text
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+}

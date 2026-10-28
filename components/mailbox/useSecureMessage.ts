@@ -36,9 +36,8 @@ import { fetchDirectoryKey } from "@/lib/api/emailClient";
 import { classifySanitization, classifyVerification } from "@/lib/audit/classify";
 import { useSecurityMode } from "@/store/SecurityModeContext";
 import { useTransport } from "@/store/TransportContext";
-import { useUserProfile } from "@/store/UserProfileContext";
+import { useAuth } from "@/store/AuthContext";
 import { useAudit } from "@/store/AuditContext";
-import { CURRENT_USER } from "@/lib/constants";
 
 export interface SecureMessageView {
   /** "working" while the pipeline runs. */
@@ -47,6 +46,8 @@ export interface SecureMessageView {
   verification: VerificationResult | null;
   /** Decrypted (and sanitized) content, or null when unavailable. */
   payload: SecurePayload | null;
+  /** What DOMPurify removed before the body reached the renderer. */
+  sanitization?: { stripped: boolean; removedChars: number };
 }
 
 const IDLE: SecureMessageView = { phase: "idle", verification: null, payload: null };
@@ -56,7 +57,7 @@ export function useSecureMessage(
   /** Bump to force a re-run (e.g. after a certificate is revoked). */
   refreshToken = 0,
 ): SecureMessageView {
-  const { profile } = useUserProfile();
+  const { account: profile } = useAuth();
   const { mode } = useSecurityMode();
   const { recordPacket, recordCryptoStep } = useTransport();
   const { recordIncident } = useAudit();
@@ -159,7 +160,8 @@ export function useSecureMessage(
           if (
             !payload &&
             outcome.failedStage === "unwrap" &&
-            email.sender === CURRENT_USER
+            profile !== null &&
+            email.sender.toLowerCase() === profile.email.toLowerCase()
           ) {
             verification = {
               status: "plaintext",
@@ -175,10 +177,13 @@ export function useSecureMessage(
 
         // ③ Sanitize recovered HTML BEFORE it can reach the renderer, and
         //    record any stripped markup as a sanitization incident.
+        let sanitization: SecureMessageView["sanitization"];
         if (payload) {
           const original = payload.body;
           const started = performance.now();
           const clean = await sanitizeHtml(original);
+          const removedChars = Math.max(0, original.length - clean.length);
+          sanitization = { stripped: removedChars > 0, removedChars };
           recordCryptoStep({
             phase: "sanitize",
             label: "DOMPurify HTML sanitization",
@@ -194,7 +199,7 @@ export function useSecureMessage(
         }
 
         if (!cancelled) {
-          setState({ phase: "done", verification, payload });
+          setState({ phase: "done", verification, payload, sanitization });
         }
       } catch (cause) {
         if (!cancelled) {

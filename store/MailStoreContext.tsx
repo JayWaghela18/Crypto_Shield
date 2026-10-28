@@ -1,12 +1,12 @@
 "use client";
 
 /**
- * Mailbox state store — loads inbox/sent and sends new messages, routing
- * every request through the packet-recording client so the inspector stays
- * live.
+ * Mailbox state store — loads inbox/sent for the ACTIVE account and sends new
+ * messages, routing every request through the packet-recording client so the
+ * inspector stays live.
  *
- * Phase 2: when the global mode is SECURE, `sendDraft` packages the message
- * with the hybrid engine BEFORE it touches the network:
+ * When the global mode is SECURE, `sendDraft` packages the message with the
+ * hybrid engine BEFORE it touches the network:
  *
  *   directory lookup (recipient's public key)
  *     → AES-256-GCM payload encryption
@@ -43,46 +43,38 @@ import { classifyMitmInterception } from "@/lib/audit/classify";
 import { useSecurityMode } from "@/store/SecurityModeContext";
 import { useTransport } from "@/store/TransportContext";
 import { useAudit } from "@/store/AuditContext";
-import { useUserProfile } from "@/store/UserProfileContext";
-import { CURRENT_USER } from "@/lib/constants";
+import { useAuth } from "@/store/AuthContext";
 
 interface MailStoreContextValue {
-  /** Messages currently shown (for `activeFolder`). */
   emails: EmailPayload[];
   activeFolder: MailboxFolder;
   isLoading: boolean;
-  /** Error from the last send/load, surfaced in the UI. */
   error: string | null;
-  /** Success message after a send. */
   notice: string | null;
-  /** Load a folder (inbox/sent) from the API. */
   loadFolder: (folder: MailboxFolder) => Promise<void>;
-  /**
-   * Send a draft through the current security mode's transport.
-   * `options.tamper` runs the Phase 3 MITM simulation: the payload is
-   * altered while "in transit" (one character) before it reaches the server.
-   */
   sendDraft: (
     draft: EmailDraft,
     options?: SendAttackOptions,
   ) => Promise<EmailPayload | null>;
   clearNotice: () => void;
+  clearError: () => void;
 }
 
 const MailStoreContext = createContext<MailStoreContextValue | null>(null);
 
 /**
- * Sender-side Sent copies persist in localStorage (like a real mail client's
- * Sent folder) so you can still read mail you sent to OTHERS after a reload —
+ * Sender-side Sent copies persist per account in localStorage (like a real
+ * mail client) so you can still read mail you sent to OTHERS after a reload —
  * recipient-only encryption means the server copy is opaque even to you.
- * ⚠ Demo tradeoff: production clients should encrypt this at rest too.
  */
-const SENT_STORAGE_KEY = "cryptoshield.sent.v1";
+function sentStorageKey(email: string): string {
+  return `cryptoshield.sent.v2.${email.toLowerCase()}`;
+}
 
-function loadStoredSent(): EmailPayload[] {
+function loadStoredSent(email: string): EmailPayload[] {
   try {
     if (typeof window === "undefined") return [];
-    const raw = window.localStorage.getItem(SENT_STORAGE_KEY);
+    const raw = window.localStorage.getItem(sentStorageKey(email));
     if (!raw) return [];
     const parsed = JSON.parse(raw) as EmailPayload[];
     return Array.isArray(parsed) ? parsed.slice(0, 50) : [];
@@ -91,9 +83,12 @@ function loadStoredSent(): EmailPayload[] {
   }
 }
 
-function persistSent(entries: EmailPayload[]): void {
+function persistSent(email: string, entries: EmailPayload[]): void {
   try {
-    window.localStorage.setItem(SENT_STORAGE_KEY, JSON.stringify(entries.slice(0, 50)));
+    window.localStorage.setItem(
+      sentStorageKey(email),
+      JSON.stringify(entries.slice(0, 50)),
+    );
   } catch {
     // quota/privacy errors are non-fatal — the in-memory copy still works
   }
@@ -103,13 +98,9 @@ export function MailStoreProvider({ children }: { children: ReactNode }) {
   const { mode } = useSecurityMode();
   const { recordPacket, recordCryptoStep } = useTransport();
   const { recordIncident } = useAudit();
-  const { profile, registered } = useUserProfile();
+  const { account, registered } = useAuth();
 
   const [emails, setEmails] = useState<EmailPayload[]>([]);
-  // Messages this browser session sent. Kept locally so (a) spoofed sends
-  // (From != current user) still show under Sent, and (b) the sender keeps a
-  // plaintext copy — a recipient-only encryption scheme means the server copy
-  // is opaque even to the sender.
   const [sessionSent, setSessionSent] = useState<EmailPayload[]>([]);
   const [activeFolder, setActiveFolder] = useState<MailboxFolder>("inbox");
   const [isLoading, setIsLoading] = useState(false);
@@ -118,37 +109,50 @@ export function MailStoreProvider({ children }: { children: ReactNode }) {
 
   const activeFolderRef = useRef<MailboxFolder>("inbox");
   activeFolderRef.current = activeFolder;
+  const sessionSentRef = useRef<EmailPayload[]>([]);
+  sessionSentRef.current = sessionSent;
+  const accountRef = useRef(account);
+  accountRef.current = account;
 
-  // Restore sender-side plaintext copies after mount (avoids hydration mismatch).
+  // Each account has its own Sent cache; restore it when the session changes.
   useEffect(() => {
-    const stored = loadStoredSent();
-    if (stored.length > 0) setSessionSent(stored);
-  }, []);
+    setEmails([]);
+    setError(null);
+    setNotice(null);
+    setSessionSent(account ? loadStoredSent(account.email) : []);
+  }, [account?.email]);
 
-  const updateSessionSent = useCallback((updater: (prev: EmailPayload[]) => EmailPayload[]) => {
-    setSessionSent((prev) => {
-      const next = updater(prev);
-      persistSent(next);
-      return next;
-    });
-  }, []);
+  const updateSessionSent = useCallback(
+    (updater: (prev: EmailPayload[]) => EmailPayload[]) => {
+      const email = accountRef.current?.email;
+      setSessionSent((prev) => {
+        const next = updater(prev);
+        if (email) persistSent(email, next);
+        return next;
+      });
+    },
+    [],
+  );
 
   const loadFolder = useCallback(
     async (folder: MailboxFolder) => {
+      const viewer = accountRef.current;
+      if (!viewer) return;
+
       setActiveFolder(folder);
       setIsLoading(true);
       setError(null);
       try {
         // Every fetch is recorded → shows up live in the transport inspector.
-        const list = await fetchMailboxRequest(folder, CURRENT_USER, mode, recordPacket);
+        const list = await fetchMailboxRequest(folder, viewer.email, mode, recordPacket);
         if (folder === "sent") {
-          // Local session copies WIN over the server copy of the same id:
-          // they carry the sender's plaintext view + localPlaintext marker.
-          const localIds = new Set(sessionSent.map((e) => e.id));
-          const merged = [
-            ...sessionSent,
-            ...list.filter((e) => !localIds.has(e.id)),
-          ].sort((a, b) => b.timestamp - a.timestamp);
+          // Local session copies WIN over the server copy of the same id: they
+          // carry the sender's plaintext view + localPlaintext marker.
+          const local = sessionSentRef.current;
+          const localIds = new Set(local.map((e) => e.id));
+          const merged = [...local, ...list.filter((e) => !localIds.has(e.id))].sort(
+            (a, b) => b.timestamp - a.timestamp,
+          );
           setEmails(merged);
         } else {
           setEmails(list);
@@ -159,30 +163,35 @@ export function MailStoreProvider({ children }: { children: ReactNode }) {
         setIsLoading(false);
       }
     },
-    [mode, recordPacket, sessionSent],
+    [mode, recordPacket],
   );
 
-  // Refresh the visible folder once this identity is published to the
-  // directory — that is when Bob's server-signed secure seed becomes
-  // decryptable/visible (it is created during registration).
-  const loadedAfterRegister = useRef(false);
+  // Refresh the visible folder once this identity is published — that is when
+  // the mailbox becomes authoritative for the new account.
+  const loadedFor = useRef<string | null>(null);
   useEffect(() => {
-    if (registered && !loadedAfterRegister.current) {
-      loadedAfterRegister.current = true;
-      void loadFolder(activeFolderRef.current);
+    if (!account || !registered) {
+      loadedFor.current = null;
+      return;
     }
-  }, [registered, loadFolder]);
+    if (loadedFor.current === account.email) return;
+    loadedFor.current = account.email;
+    void loadFolder("inbox");
+  }, [account, registered, loadFolder]);
 
   const sendDraft = useCallback(
     async (draft: EmailDraft, options?: SendAttackOptions) => {
+      const viewer = accountRef.current;
       setIsLoading(true);
       setError(null);
       setNotice(null);
       try {
+        if (!viewer) throw new Error("Sign in to send mail");
+
         let message: EmailPayload;
 
         if (mode === "secure") {
-          if (!profile) throw new Error("Keys are still generating — retry shortly");
+          const profile = viewer;
 
           // ① Directory lookup: recipient's published RSA-OAEP public key.
           const recipientKeys = await fetchDirectoryKey(
@@ -213,9 +222,9 @@ export function MailStoreProvider({ children }: { children: ReactNode }) {
             recordCryptoStep,
           );
 
-          // Phase 3 MITM simulation: flip one character of the ciphertext
-          // while it is "in transit" — the attacker cannot read the payload,
-          // only corrupt it. The receiver's GCM tag check will catch it.
+          // MITM simulation: flip one character of the ciphertext while it is
+          // "in transit" — the attacker cannot read the payload, only corrupt
+          // it. The receiver's GCM tag check will catch it.
           let wireEnvelope = envelope;
           if (options?.tamper) {
             wireEnvelope = {
@@ -271,9 +280,7 @@ export function MailStoreProvider({ children }: { children: ReactNode }) {
           return message;
         }
 
-        // Unsafe engine: raw plaintext, spoofable sender (Phase 1 behavior).
-        // Phase 3 MITM simulation: alter one character of the plaintext body
-        // in transit — with no integrity check the recipient cannot tell.
+        // Unsafe engine: raw plaintext, spoofable sender.
         let wireDraft = draft;
         if (options?.tamper) {
           wireDraft = { ...draft, body: tamperPlaintext(draft.body) };
@@ -309,10 +316,11 @@ export function MailStoreProvider({ children }: { children: ReactNode }) {
         setIsLoading(false);
       }
     },
-    [mode, profile, recordPacket, recordCryptoStep, recordIncident, updateSessionSent],
+    [mode, recordPacket, recordCryptoStep, recordIncident, updateSessionSent],
   );
 
   const clearNotice = useCallback(() => setNotice(null), []);
+  const clearError = useCallback(() => setError(null), []);
 
   const value = useMemo<MailStoreContextValue>(
     () => ({
@@ -324,8 +332,19 @@ export function MailStoreProvider({ children }: { children: ReactNode }) {
       loadFolder,
       sendDraft,
       clearNotice,
+      clearError,
     }),
-    [emails, activeFolder, isLoading, error, notice, loadFolder, sendDraft, clearNotice],
+    [
+      emails,
+      activeFolder,
+      isLoading,
+      error,
+      notice,
+      loadFolder,
+      sendDraft,
+      clearNotice,
+      clearError,
+    ],
   );
 
   return <MailStoreContext.Provider value={value}>{children}</MailStoreContext.Provider>;

@@ -34,15 +34,81 @@ the **Attack Lab** — *Spoofed Email*, *MITM Tampering*, *Stored XSS*. Open eac
 message and compare the banner verdict against **Unsafe Mode**.
 
 No `.env`, no API keys, no third-party crypto packages — just Node 18+ and a
-modern browser.
+modern browser. Every script, port and gotcha is listed under
+[🚀 Run the project](#-run-the-project) below.
 
 📚 **Full documentation lives in [`/docs`](./docs):**
 
 | Doc | What's inside |
 | --- | --- |
 | [**SETUP_AND_RUN.md**](./docs/SETUP_AND_RUN.md) | Prerequisites, install/run/build commands, env-var story, full folder map |
+| [**DEPLOYMENT.md**](./docs/DEPLOYMENT.md) | Step-by-step GitHub Pages publish, static build internals, server-deploy alternative |
 | [**TROUBLESHOOTING.md**](./docs/TROUBLESHOOTING.md) | Web Crypto availability, JWK vs SPKI/PKCS8, DOMPurify stripping, key mismatch, body limits |
 | [**ATTACK_SCENARIOS.md**](./docs/ATTACK_SCENARIOS.md) | Every attack payload, expected verdicts, and reproduction steps |
+
+---
+
+## 🚀 Run the project
+
+```bash
+# 1. Install dependencies (Node 18+, 20 LTS recommended)
+npm install
+
+# 2. Start the dev server → http://localhost:3000
+npm run dev
+
+# 3. (optional) verify everything
+npm run typecheck   # tsc --noEmit
+npm test            # vitest — crypto + attack suite
+npm run lint        # eslint (next/core-web-vitals)
+npm run build       # production server build (type-checked + linted)
+npm run start       # run that build on http://localhost:3000
+```
+
+| Script | What it does |
+| --- | --- |
+| `npm run dev` | Clears `.next/` first (avoids the OneDrive/`readlink` crash), then starts `next dev` on port 3000 |
+| `npm run dev:keep` | Plain `next dev` without the pre-clean |
+| `npm run build` | Normal **server** build — real `/api/email` + `/api/keys` routes |
+| `npm run build:static` | **Static** build for GitHub Pages → `./out` (API routes swapped for the localStorage relay) |
+| `npm run preview:static` | Serve `./out` locally on http://localhost:4173 |
+| `npm run typecheck` / `lint` / `test` | tsc · eslint · vitest |
+
+Then: flip the navbar toggle to **Secure Mode**, and click the three buttons in
+the **Attack Lab** — *Spoofed Email*, *MITM Tampering*, *Stored XSS*. Open each
+message and compare the banner verdict against **Unsafe Mode**.
+
+> If port 3000 is busy: `npm run dev -- -p 4200`.
+> If a build ever fails with `EINVAL … readlink … .next`, just run
+> `npm run dev` again — it removes the stale `.next` folder automatically.
+
+---
+
+## 🌐 Deploy to GitHub Pages
+
+```bash
+npm run build:static     # static bundle → ./out
+npm run preview:static   # check it at http://localhost:4173
+```
+
+**Go live (already wired up):**
+
+1. GitHub → **Settings → Pages → Source → GitHub Actions**.
+2. `git push origin main` — the included
+   [`deploy-pages.yml`](./.github/workflows/deploy-pages.yml) workflow builds
+   `out/` with `NEXT_PUBLIC_BASE_PATH=/<repo>` and publishes it.
+3. Open the URL from the Actions run:
+   `https://jaywaghela18.github.io/Crypto_Shield/`
+
+**Read this first:** GitHub Pages has no Node server, so `/api/email` and
+`/api/keys` are replaced by a **localStorage relay**
+([`lib/api/staticRelay.ts`](./lib/api/staticRelay.ts)) — same routes, same
+validation, same client-side cryptography, but each visitor's demo data lives
+in their own browser. Want one shared inbox for everyone? Deploy `npm run
+build` + `npm start` to any Node host instead.
+
+Full walkthrough, troubleshooting and a pre-publish checklist:
+[**docs/DEPLOYMENT.md**](./docs/DEPLOYMENT.md).
 
 ---
 
