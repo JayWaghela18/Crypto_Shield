@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node scripts/clean-next.mjs && next dev",
     "dev:keep": "next dev",
-    "build": "next build",
+    "build": "node scripts/clean-next.mjs && next build",
     "build:static": "node scripts/build-static.mjs",
     "preview:static": "node scripts/serve-static.mjs",
     "start": "next start",
